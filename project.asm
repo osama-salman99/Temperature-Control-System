@@ -1,0 +1,439 @@
+include "P16F877A.INC"
+
+cblock	0x20
+	MANU
+	HOLD
+	SPEED
+	TEMP
+	TEMPERATURE
+	TEMPERATURE_ONES
+	TEMPERATURE_TENS
+	STATUS_TEMP
+	WORKING_TEMP
+	DELAY_TEMP_LOW
+	DELAY_TEMP_HIGH
+	DIV_RESULT
+	CHANGE
+	CHANGE_MANU
+	CHANGE_SPEED
+	CHANGE_TEMPERATURE
+	CHANGE_HOLD
+endc
+
+SWITCH		equ		1
+LCD_RS		equ		2
+LCD_RW		equ		3
+LCD_E		equ		4
+
+org		0x00
+	GOTO	MAIN
+org		0x04
+	GOTO	ISR
+
+MAIN:
+	CALL	INITIALIZE			; Initialize the system
+REPEAT:
+	banksel	PORTB
+	BTFSC	PORTB, SWITCH		; Check if system is in hold
+	GOTO	HOLD_PART
+	CLRF	HOLD				; Clears Hold flag
+	BCF		ADCON0, CHS0		; Choose analog channel 0 (Temperature sensor)
+	CALL	WAIT_FOR_ADC		; Wait for ADC to finish converting
+	CALL	UPDATE_SPEED_TEMP	; Update the speed and temperature variables from the read temperature value
+	MOVF	MANU, F
+	BTFSC	STATUS, Z			; Check if mode is MANU
+	GOTO	DONE_READING		; Skip potentieometer reading if mode is AUTO
+	BSF		ADCON0, CHS0		; Choose analog channel 1 (Potentiometer)
+	CALL	WAIT_FOR_ADC		; Wait for ADC to finish converting
+	CALL	UPDATE_SPEED_POT	; Update the speed variable from the read potentiometer value
+DONE_READING:
+	CALL	SHOW_INFO			; Show system info on LCD
+	GOTO	DONE
+HOLD_PART:
+	MOVLW	0xFF				; Set the Change Hold variable
+	MOVWF	CHANGE_HOLD
+	MOVF	HOLD, F
+	BTFSS	STATUS, Z			; Check if the system was already in Hold
+	GOTO	DONE
+	CLRF	SPEED				; Set the Speed to 0 (Turn fans off)
+	CALL	SHOW_HOLD			; Show "System in Hold" on LCD
+	MOVLW	0xFF				; Set the Hold variable
+	MOVWF	HOLD
+DONE:
+	CALL	EXECUTE_FANS		; Control the speed of the fans depending on the speed variable
+	GOTO	REPEAT				; Repeat whole operation
+
+SHOW_HOLD:						; Shows "System in Hold" on the LCD
+	MOVLW	0x01
+	CALL	SEND_COMMAND
+	MOVLW	0x02
+	CALL	SEND_COMMAND
+	MOVLW	0x81
+	CALL	SEND_COMMAND
+	MOVLW	0x53				; 'S'
+	CALL	SEND_DATA
+	MOVLW	0x79				; 'y'
+	CALL	SEND_DATA
+	MOVLW	0x73				; 's'
+	CALL	SEND_DATA
+	MOVLW	0x74				; 't'
+	CALL	SEND_DATA
+	MOVLW	0x65				; 'e'
+	CALL	SEND_DATA
+	MOVLW	0x6D				; 'm'
+	CALL	SEND_DATA
+	MOVLW	0x10				; ' '
+	CALL	SEND_DATA
+	MOVLW	0x69				; 'i'
+	CALL	SEND_DATA
+	MOVLW	0x6E				; 'n'
+	CALL	SEND_DATA
+	MOVLW	0x10				; ' '
+	CALL	SEND_DATA
+	MOVLW	0x48				; 'H'
+	CALL	SEND_DATA
+	MOVLW	0x6F				; 'o'
+	CALL	SEND_DATA
+	MOVLW	0x6C				; 'l'
+	CALL	SEND_DATA
+	MOVLW	0x64				; 'd'
+	CALL	SEND_DATA
+	RETURN
+
+SHOW_INFO:						; Shows	the system info on the LCD
+	CALL	CHECK_CHANGE		; Check if value change occured
+	MOVF	CHANGE, F			; Check the Change flag
+	BTFSC	STATUS, Z
+	RETURN						; Return if there is no change
+	MOVLW	0x01				; Clear the display
+	CALL	SEND_COMMAND
+	MOVLW	0x02				; Return cursor
+	CALL	SEND_COMMAND
+	MOVLW	0x86
+	CALL	SEND_COMMAND		; Move cursor to the center of the first line
+	CALL	WRITE_MODE	
+	MOVLW	0xC0				; Move cursor to the start of the second line
+	CALL	SEND_COMMAND
+	CALL	WRITE_SPEED
+	MOVLW	0xCC				; Move cursor to the 4th quarter of the second line
+	CALL	SEND_COMMAND
+	CALL	WRITE_TEMP
+	RETURN
+
+WRITE_MODE:
+	MOVF	MANU, F
+	BTFSS	STATUS, Z
+	GOTO	WRITE_MANU
+	MOVLW	0x41				; 'A'
+	CALL	SEND_DATA
+	MOVLW	0x55				; 'U'
+	CALL	SEND_DATA
+	MOVLW	0x54				; 'T'
+	CALL	SEND_DATA
+	MOVLW	0x4F				; 'O'
+	CALL	SEND_DATA
+	RETURN
+WRITE_MANU:
+	MOVLW	0x4D				; 'M'
+	CALL	SEND_DATA
+	MOVLW	0x41				; 'A'
+	CALL	SEND_DATA
+	MOVLW	0x4E				; 'N'
+	CALL	SEND_DATA
+	MOVLW	0x55				; 'U'
+	CALL	SEND_DATA
+	RETURN
+
+WRITE_SPEED:
+	MOVF	SPEED, W			; Speed
+	IORLW	0x30
+	CALL	SEND_DATA
+	MOVLW	0x30				; '0'
+	CALL	SEND_DATA
+	MOVLW	0x30				; '0'
+	CALL	SEND_DATA
+	MOVLW	0x30				; '0'
+	CALL	SEND_DATA
+	MOVLW	0x10				; ' '
+	CALL	SEND_DATA
+	MOVLW	0x52				; 'R'
+	CALL	SEND_DATA
+	MOVLW	0x50				; 'P'
+	CALL	SEND_DATA
+	MOVLW	0x4D				; 'M'
+	CALL	SEND_DATA
+	RETURN
+
+WRITE_TEMP:
+	MOVF	TEMPERATURE_TENS, W	; Tens digit
+	IORLW	0x30
+	CALL	SEND_DATA
+	MOVF	TEMPERATURE_ONES, W	; Ones digit
+	IORLW	0x30
+	CALL	SEND_DATA
+	MOVLW	0xDF				; Degree character
+	CALL	SEND_DATA
+	MOVLW	0x43				; 'C'
+	CALL	SEND_DATA
+	RETURN
+
+CHECK_CHANGE:					; Check if mode, speed, temperature, or hold changed
+	MOVF	MANU, W
+	SUBWF	CHANGE_MANU, W
+	BTFSS	STATUS, Z			; Check mode change
+	GOTO	SET_CHANGE
+	MOVF	SPEED, W
+	SUBWF	CHANGE_SPEED, W
+	BTFSS	STATUS, Z			; Check speed change
+	GOTO	SET_CHANGE
+	MOVF	TEMPERATURE, W
+	SUBWF	CHANGE_TEMPERATURE, W
+	BTFSS	STATUS, Z			; Check temperature change
+	GOTO	SET_CHANGE
+	MOVF	CHANGE_HOLD, F
+	BTFSS	STATUS, Z			; Check hold change
+	GOTO	SET_CHANGE
+	CLRF	CHANGE
+	GOTO	CHECK_CHANGE_DONE
+SET_CHANGE:
+	MOVLW	0xFF
+	MOVWF	CHANGE
+CHECK_CHANGE_DONE:
+	MOVF	MANU, W
+	MOVWF	CHANGE_MANU
+	MOVF	SPEED, W
+	MOVWF	CHANGE_SPEED
+	MOVF	TEMPERATURE, W
+	MOVWF	CHANGE_TEMPERATURE
+	CLRF	CHANGE_HOLD
+	RETURN
+
+UPDATE_SPEED_TEMP:				; Updates the Speed and Temperature variables depending on the temperature read
+	banksel	ADRESL
+	MOVLW	D'237'
+	SUBWF	ADRESL, W
+	banksel	TEMPERATURE
+	CALL	DIV_BY_5
+	MOVWF	TEMPERATURE
+	MOVLW	D'39'
+	MOVWF	TEMP
+	MOVF	TEMPERATURE, W
+	SUBWF	TEMP, W
+	BTFSS	STATUS, C
+	DECF	TEMPERATURE, F
+	CALL	TEMPERATURE_TO_BCD
+	MOVF	TEMPERATURE_TENS, W
+	MOVWF	SPEED
+	MOVLW	0x03
+	MOVWF	TEMP
+	MOVF	SPEED, W
+	SUBWF	TEMP, F
+	BTFSC	STATUS, C
+	RETURN
+	MOVLW	0x03
+	MOVWF	SPEED
+	RETURN
+
+UPDATE_SPEED_POT:				; Updates the Speed variable depending on the potentiometer value read
+	banksel	ADRESH
+	MOVF	ADRESH, W
+	BTFSS	STATUS, Z
+	GOTO	CASE_NOT_00
+CASE_00:
+	banksel	ADRESL
+	MOVF	ADRESL, W
+	BTFSS	STATUS, Z
+	GOTO	CASE_00_NONZERO
+CASE_00_00:
+	banksel	SPEED
+	MOVLW	0x00
+	MOVWF	SPEED
+	RETURN
+CASE_00_NONZERO:
+	banksel	SPEED
+	MOVLW	0x01
+	MOVWF	SPEED
+	RETURN
+CASE_NOT_00:
+	MOVLW	0x01
+	SUBWF	ADRESH, W
+	BTFSS	STATUS, Z
+	GOTO	CASE_1X
+CASE_01:
+	banksel	ADRESL
+	MOVF	ADRESL, W
+	BTFSS	STATUS, Z
+	GOTO	CASE_01_NONZERO
+CASE_01_00:
+	GOTO	CASE_00_NONZERO
+CASE_01_NONZERO:
+	MOVLW	0xFF
+	SUBWF	ADRESL, W
+	BTFSS	STATUS, Z
+	GOTO	CASE_00_NOT_FF
+CASE_00_FF:
+	banksel	SPEED
+	MOVLW	0x03
+	MOVWF	SPEED
+	RETURN
+CASE_00_NOT_FF:
+	banksel	SPEED
+	MOVLW	0x02
+	MOVWF	SPEED
+	RETURN
+CASE_1X:
+	GOTO	CASE_00_FF
+	RETURN
+
+EXECUTE_FANS:
+	banksel SPEED
+	MOVF	SPEED, W
+	CALL	GET_DUTY_DELAY
+	MOVWF	CCPR1L
+	RETURN
+
+GET_DUTY_DELAY:
+	ADDWF	PCL, F
+	RETLW	0x00
+	RETLW	0x15
+	RETLW	0x55
+	RETLW	0x7D
+
+DIV_BY_5:
+	MOVWF	TEMP
+	MOVF	TEMP, F
+	BTFSC	STATUS, Z
+	RETURN
+	MOVWF	TEMP
+	CLRF	DIV_RESULT
+	MOVLW	0x05
+DIV_REPEAT:
+	INCF	DIV_RESULT, F
+	SUBWF	TEMP, F
+	BTFSC	STATUS, C
+	GOTO	DIV_REPEAT
+	DECF	DIV_RESULT, F
+	MOVF	DIV_RESULT, W
+	RETURN
+
+WAIT_FOR_ADC:
+	BSF		ADCON0, GO
+WAIT:
+	BTFSS	PIR1, ADIF
+	GOTO	WAIT
+	BCF		PIR1, ADIF
+	RETURN
+
+ISR:
+	CALL	PUSH_STATE			; Save current state
+	BTFSC	INTCON, INTF
+	CALL	CHANGE_MODE
+	CALL	POP_STATE			; Return to saved state
+	RETFIE
+
+CHANGE_MODE:
+	BCF		INTCON, INTF		; Clear external interrupt flag
+	banksel	MANU
+	COMF	MANU, F
+	RETURN
+
+PUSH_STATE:
+	MOVWF	WORKING_TEMP
+	SWAPF	STATUS, W
+	CLRF	STATUS
+	MOVWF	STATUS_TEMP
+	RETURN
+
+POP_STATE:
+	SWAPF	STATUS_TEMP, W
+	MOVWF	STATUS
+	SWAPF	WORKING_TEMP, F
+	SWAPF	WORKING_TEMP, W
+	RETURN
+
+INITIALIZE:
+	banksel	MANU
+	CLRF	MANU				; Choose AUTO mode
+	CLRF	HOLD				; Clear HOLD flag
+	CLRF	SPEED
+	MOVLW	0xFF
+	MOVWF	CHANGE				; Set the change flag
+	banksel	TRISA
+	MOVLW	0x0F				; Set first 4 bits in PORTA as inputs
+	MOVWF	TRISA
+	MOVLW	0x03				; Set first 2 bits in PORTB as inputs
+	MOVWF	TRISB
+	CLRF	TRISC				; Set all PORTC bits as outputs
+	CLRF	TRISD				; Set all PORTD bits as outputs
+	MOVLW	0x8D				; Set ADC result as right justified, clock = Fosc/8, and AN0-AN3 as analog ports
+	MOVWF	ADCON1
+	MOVLW	D'124'				; Initialize PR2 with the value 124
+	MOVWF	PR2
+	banksel	ADCON0
+	MOVLW	0x41				; Set ADC clock = Fosc/8, CH0 as the active channel
+	MOVWF	ADCON0
+	MOVLW	0x38				; Setup LCD as 8-bit interface, 2-line mode, and 5x7 dot format
+	CALL	SEND_COMMAND
+	MOVLW	0x0C				; Turn LCD display on
+	CALL	SEND_COMMAND
+	CLRF	CCPR1L
+	MOVLW	0x05				; Set TIMER2 prescaler to 4 and turn it on
+	MOVWF	T2CON
+	MOVLW	0x0C				; Set CCP1CON to PWM mode
+	MOVWF	CCP1CON
+	BSF		INTCON, INTE		; Enable RB0/INT interrupt
+	BSF		INTCON, GIE			; Enable global interruputs
+	RETURN
+
+SEND_DATA:						; Sends data stored in working register to LCD
+	banksel	PORTD
+	MOVWF	PORTD
+	BSF		PORTB, LCD_RS
+	BCF		PORTB, LCD_RW
+	BSF		PORTB, LCD_E
+	NOP
+	BCF		PORTB, LCD_E
+	CALL	LCD_DELAY
+	RETURN
+
+SEND_COMMAND:					; Sends command stored in working register to LCD
+	banksel	PORTD
+	MOVWF	PORTD
+	BCF		PORTB, LCD_RS
+	BCF		PORTB, LCD_RW
+	BSF		PORTB, LCD_E
+	NOP
+	BCF		PORTB, LCD_E
+	CALL	LCD_DELAY
+	RETURN
+
+TEMPERATURE_TO_BCD:				; Converts temperature value to BCD stored in (TEMPERATURE_TENS, TEMPERATURE_ONES)
+	CLRF	TEMPERATURE_ONES
+	CLRF	TEMPERATURE_TENS
+	MOVF	TEMPERATURE, W
+	MOVWF	TEMP
+TENS:
+	MOVLW	D'10'
+	SUBWF	TEMP, W
+	BTFSS	STATUS, C
+	GOTO	ONES
+	MOVWF	TEMP
+	INCF	TEMPERATURE_TENS, F
+	GOTO	TENS
+ONES:
+	MOVF	TEMP, W
+	MOVWF	TEMPERATURE_ONES
+	RETURN
+
+LCD_DELAY:						; Produces enough delay for the LCD to read/execute data/instructions
+	MOVLW	0x03
+	MOVWF	DELAY_TEMP_HIGH
+	CLRF	DELAY_TEMP_LOW
+LCD_DELAY_REP:
+	DECFSZ	DELAY_TEMP_LOW, F
+	GOTO	LCD_DELAY_REP
+	DECFSZ	DELAY_TEMP_HIGH, F
+	GOTO	LCD_DELAY_REP
+	RETURN
+
+end
